@@ -1,8 +1,13 @@
 import torch
+from scipy.io import wavfile
+import numpy as np
 import torch.nn as nn
 import CoreAudioML.miscfuncs as miscfuncs
 import math
 from contextlib import nullcontext
+
+def save_wav(name, data):
+    wavfile.write(name, 44100, data.flatten().astype(np.float32))
 
 def wrapperkwargs(func, kwargs):
     return func(**kwargs)
@@ -26,6 +31,10 @@ class SimpleRNN(nn.Module):
         self.skip = skip
         self.save_state = True
         self.hidden = None
+        print(self.skip)
+        print(self.input_size)
+        print(self.output_size)
+        print(num_layers)
 
     def forward(self, x):
         if self.skip:
@@ -67,44 +76,73 @@ class SimpleRNN(nn.Module):
 
     # train_epoch runs one epoch of training
     def train_epoch(self, input_data, target_data, loss_fcn, optim, bs, init_len=200, up_fr=1000):
+        # print("input_data_size")
+        # print(input_data.size())
         # shuffle the segments at the start of the epoch
         shuffle = torch.randperm(input_data.shape[1])
 
+        # Zero the gradients. However, we aren't "initializing the hidden state"???
+        # I think that means the hidden state will be all zeros.
+        # How much does that matter
+        self.zero_grad()
+
         # Iterate over the batches
         ep_loss = 0
+        # Try switching down to floor
         for batch_i in range(math.ceil(shuffle.shape[0] / bs)):
             # Load batch of shuffled segments
             input_batch = input_data[:, shuffle[batch_i * bs:(batch_i + 1) * bs], :]
             target_batch = target_data[:, shuffle[batch_i * bs:(batch_i + 1) * bs], :]
+            # print("Input batch Size")
+            # print(input_batch.size())
 
-            # Initialise network hidden state by processing some samples then zero the gradient buffers
-            self(input_batch[0:init_len, :, :])
+            # save_wav("./test/"+str(batch_i)+".wav", target_batch[:, 32, :].cpu().numpy())
+
+            # Process a bs number of frames that are size of frame_len
+            output = self(input_batch[:, :, :])
+
+            # Calculate loss and update network parameters
+            loss = loss_fcn(output, target_batch[:, :, :])
+            loss.backward()
+            optim.step()
+
+            # Set the network hidden state, to detach it from the computation graph
+            self.detach_hidden()
             self.zero_grad()
 
-            # Choose the starting index for processing the rest of the batch sequence, in chunks of args.up_fr
-            start_i = init_len
-            batch_loss = 0
-            # Iterate over the remaining samples in the mini batch
-            for k in range(math.ceil((input_batch.shape[0] - init_len) / up_fr)):
-                # Process input batch with neural network
-                output = self(input_batch[start_i:start_i + up_fr, :, :])
+            ep_loss += loss
+            self.reset_hidden()
 
-                # Calculate loss and update network parameters
-                loss = loss_fcn(output, target_batch[start_i:start_i + up_fr, :, :])
-                loss.backward()
-                optim.step()
+            # # Initialise network hidden state by processing some samples then zero the gradient buffers
+            # Don't forget that you added a zero_grad() above outside the for loop!!!!
+            # self(input_batch[0:init_len, :, :])
+            # self.zero_grad()
 
-                # Set the network hidden state, to detach it from the computation graph
-                self.detach_hidden()
-                self.zero_grad()
+            # # Choose the starting index for processing the rest of the batch sequence, in chunks of args.up_fr
+            # start_i = init_len
+            # batch_loss = 0
+            # # Iterate over the remaining samples in the mini batch
+            # for k in range(math.ceil((input_batch.shape[0] - init_len) / up_fr)):
+            #     # Process input batch with neural network
+            #     output = self(input_batch[start_i:start_i + up_fr, :, :])
 
-                # Update the start index for the next iteration and add the loss to the batch_loss total
-                start_i += up_fr
-                batch_loss += loss
+            #     # Calculate loss and update network parameters
+            #     loss = loss_fcn(output, target_batch[start_i:start_i + up_fr, :, :])
+            #     loss.backward()
+            #     optim.step()
+
+            #     # Set the network hidden state, to detach it from the computation graph
+            #     self.detach_hidden()
+            #     self.zero_grad()
+
+            #     # Update the start index for the next iteration and add the loss to the batch_loss total
+            #     start_i += up_fr
+            #     batch_loss += loss
 
             # Add the average batch loss to the epoch loss and reset the hidden states to zeros
-            ep_loss += batch_loss / (k + 1)
-            self.reset_hidden()
+            # ep_loss += batch_loss / (k + 1)
+            # self.reset_hidden()
+
         return ep_loss / (batch_i + 1)
 
     # only proc processes a the input data and calculates the loss, optionally grad can be tracked or not
