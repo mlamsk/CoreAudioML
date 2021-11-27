@@ -5,6 +5,7 @@ import torch.nn as nn
 import CoreAudioML.miscfuncs as miscfuncs
 import math
 from contextlib import nullcontext
+import time
 
 def save_wav(name, data):
     wavfile.write(name, 44100, data.flatten().astype(np.float32))
@@ -76,6 +77,8 @@ class SimpleRNN(nn.Module):
 
     # train_epoch runs one epoch of training
     def train_epoch(self, input_data, target_data, loss_fcn, optim, bs, init_len=200, up_fr=1000):
+        op_start = time.time()
+
         # print("input_data_size")
         # print(input_data.size())
         # shuffle the segments at the start of the epoch
@@ -84,34 +87,51 @@ class SimpleRNN(nn.Module):
         # Zero the gradients. However, we aren't "initializing the hidden state"???
         # I think that means the hidden state will be all zeros.
         # How much does that matter
-        self.zero_grad()
+        # self.zero_grad()
 
         # Iterate over the batches
         ep_loss = 0
         # Try switching down to floor
         for batch_i in range(math.ceil(shuffle.shape[0] / bs)):
+            batch_start = time.time()
             # Load batch of shuffled segments
             input_batch = input_data[:, shuffle[batch_i * bs:(batch_i + 1) * bs], :]
             target_batch = target_data[:, shuffle[batch_i * bs:(batch_i + 1) * bs], :]
-            # print("Input batch Size")
-            # print(input_batch.size())
+            print("Input batch Size")
+            print(input_batch.size())
 
             # save_wav("./test/"+str(batch_i)+".wav", target_batch[:, 32, :].cpu().numpy())
-
-            # Process a bs number of frames that are size of frame_len
-            output = self(input_batch[:, :, :])
-
-            # Calculate loss and update network parameters
-            loss = loss_fcn(output, target_batch[:, :, :])
-            loss.backward()
-            optim.step()
-
-            # Set the network hidden state, to detach it from the computation graph
-            self.detach_hidden()
+            # initialize the hidden state and zero out the gradients
+            self(input_batch[:,0:1,:])
             self.zero_grad()
 
-            ep_loss += loss
+            for k in range(1, input_batch.shape[1]):
+                k_start = time.time()
+                # Process one frame
+                output = self(input_batch[:, k:k+1, :])
+
+                # Calculate loss and update network parameters
+                loss = loss_fcn(output, target_batch[:, k:k+1, :])
+                loss.backward()
+                optim.step()
+
+                # Set the network hidden state, to detach it from the computation graph
+                # Detaching the hidden state makes the hidden state from this point forward constant
+                # We want the hidden state to be constant because the we have already backward 
+                # propegated to this point
+                self.detach_hidden()
+                # Reset the gradents
+                self.zero_grad()
+                print("K Time")
+                print(time.time()-k_start)
+
+                ep_loss += loss
+
+            # Once we are done with the batch, reset the hidden state to None.
+            # When the pytorch LSTM sees a None hidden state, it uses zeros
             self.reset_hidden()
+            print("Batch Time")
+            print(time.time()-batch_start)
 
             # # Initialise network hidden state by processing some samples then zero the gradient buffers
             # Don't forget that you added a zero_grad() above outside the for loop!!!!
